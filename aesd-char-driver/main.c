@@ -18,10 +18,12 @@
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
 #include "aesdchar.h"
+#include "aesd-circular-buffer.h"
+
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
-MODULE_AUTHOR("Your Name Here"); /** TODO: fill in your name **/
+MODULE_AUTHOR("Borys Ladanivskyy"); /** TODO: fill in your name **/
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
@@ -31,8 +33,14 @@ int aesd_open(struct inode *inode, struct file *filp)
     PDEBUG("open");
     /**
      * TODO: handle open
+     * Done
      */
-    return 0;
+    struct aesd_dev *dev;                     /* device information */
+
+    dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
+    filp->private_data = dev;                  /* for other methods */
+
+    return 0;                                            /* success */
 }
 
 int aesd_release(struct inode *inode, struct file *filp)
@@ -63,8 +71,15 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     /**
      * TODO: handle write
      */
+
+//    struct aesd_buffer_entry entry;
+//    entry.buffptr = writestr;
+//    entry.size=strlen(writestr);
+//    aesd_circular_buffer_add_entry(buffer,&entry);
+
     return retval;
 }
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
@@ -81,6 +96,7 @@ static int aesd_setup_cdev(struct aesd_dev *dev)
     dev->cdev.owner = THIS_MODULE;
     dev->cdev.ops = &aesd_fops;
     err = cdev_add (&dev->cdev, devno, 1);
+    /* Fail gracefully if need be */
     if (err) {
         printk(KERN_ERR "Error %d adding aesd cdev", err);
     }
@@ -88,13 +104,11 @@ static int aesd_setup_cdev(struct aesd_dev *dev)
 }
 
 
-
 int aesd_init_module(void)
 {
     dev_t dev = 0;
     int result;
-    result = alloc_chrdev_region(&dev, aesd_minor, 1,
-            "aesdchar");
+    result = alloc_chrdev_region(&dev, aesd_minor, 1, "aesdchar");
     aesd_major = MAJOR(dev);
     if (result < 0) {
         printk(KERN_WARNING "Can't get major %d\n", aesd_major);
@@ -104,7 +118,10 @@ int aesd_init_module(void)
 
     /**
      * TODO: initialize the AESD specific portion of the device
+     * Done.
      */
+    aesd_circular_buffer_init(&aesd_device.buffer);
+    mutex_init(&aesd_device.lock);
 
     result = aesd_setup_cdev(&aesd_device);
 
@@ -112,22 +129,34 @@ int aesd_init_module(void)
         unregister_chrdev_region(dev, 1);
     }
     return result;
-
 }
 
 void aesd_cleanup_module(void)
 {
+    int i;
     dev_t devno = MKDEV(aesd_major, aesd_minor);
 
     cdev_del(&aesd_device.cdev);
 
     /**
-     * TODO: cleanup AESD specific poritions here as necessary
+     * TODO: cleanup AESD specific portions here as necessary
+     * Done
      */
+    if (aesd_device.buffer.full) {
+        for (i = 0; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; i++) {
+            kfree(aesd_device.buffer.entry[i].buffptr);
+            kfree(&(aesd_device.buffer.entry[i]));
+        }
+    }
+    else {
+        for (i = 0; i < aesd_device.buffer.in_offs; i++) {
+            kfree(aesd_device.buffer.entry[i].buffptr);
+            kfree(&(aesd_device.buffer.entry[i]));
+        }
+    }
 
     unregister_chrdev_region(devno, 1);
 }
-
 
 
 module_init(aesd_init_module);
