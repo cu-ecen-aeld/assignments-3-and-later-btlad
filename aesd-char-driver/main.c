@@ -18,7 +18,7 @@
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
 #include "aesdchar.h"
-#include "aesd-circular-buffer.h"
+// #include "aesd-circular-buffer.h"
 
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
@@ -68,15 +68,54 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 {
     ssize_t retval = -ENOMEM;
     PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
+
     /**
      * TODO: handle write
      */
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_buffer_entry * entry;
+    struct aesd_buffer_entry * obsolete;
+    size_t dummy;
 
-//    struct aesd_buffer_entry entry;
-//    entry.buffptr = writestr;
-//    entry.size=strlen(writestr);
-//    aesd_circular_buffer_add_entry(buffer,&entry);
+    if (mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
+    // Allocate entry 
+    entry = kmalloc(sizeof(struct aesd_buffer_entry), GFP_KERNEL);
+    if (!entry) {
+        goto out;
+    }
+    memset(entry, 0, sizeof(struct aesd_buffer_entry));
+    // Allocate place for count char
+    entry->buffptr = kmalloc(count * sizeof(char), GFP_KERNEL);
+    if (!(entry->buffptr)) {
+        kfree(entry);
+        goto out;
+    }
+    // Initialize entry
+    memset((void *)entry->buffptr, 0, count * sizeof(char));
+//    entry->size = count;
 
+    if (copy_from_user((void *)entry->buffptr, buf, count)) {
+        kfree(entry->buffptr);
+        kfree(entry);
+        retval = -EFAULT;
+        goto out;
+    }
+    entry->size = count;
+
+    /* The 'entry' is allocated and populated from user space.
+    */
+    if (dev->buffer.full) {
+        obsolete = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), 0, &dummy);
+        kfree(obsolete->buffptr);
+        obsolete->size = 0;
+    }
+
+    aesd_circular_buffer_add_entry(&(dev->buffer), entry);
+    kfree(entry);
+    retval = count;
+
+  out:
+    mutex_unlock(&dev->lock);
     return retval;
 }
 
@@ -142,17 +181,8 @@ void aesd_cleanup_module(void)
      * TODO: cleanup AESD specific portions here as necessary
      * Done
      */
-    if (aesd_device.buffer.full) {
-        for (i = 0; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; i++) {
-            kfree(aesd_device.buffer.entry[i].buffptr);
-            kfree(&(aesd_device.buffer.entry[i]));
-        }
-    }
-    else {
-        for (i = 0; i < aesd_device.buffer.in_offs; i++) {
-            kfree(aesd_device.buffer.entry[i].buffptr);
-            kfree(&(aesd_device.buffer.entry[i]));
-        }
+    for (i = 0; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; i++) {
+        kfree(aesd_device.buffer.entry[i].buffptr);
     }
 
     unregister_chrdev_region(devno, 1);
