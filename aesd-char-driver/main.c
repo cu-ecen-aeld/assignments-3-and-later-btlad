@@ -17,6 +17,7 @@
 #include <linux/types.h>
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
+#include <linux/string.h>
 #include "aesdchar.h"
 // #include "aesd-circular-buffer.h"
 
@@ -30,12 +31,12 @@ struct aesd_dev aesd_device;
 
 int aesd_open(struct inode *inode, struct file *filp)
 {
+    struct aesd_dev *dev;                     /* device information */
     PDEBUG("open");
     /**
      * TODO: handle open
      * Done
      */
-    struct aesd_dev *dev;                     /* device information */
 
     dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
     filp->private_data = dev;                  /* for other methods */
@@ -55,27 +56,71 @@ int aesd_release(struct inode *inode, struct file *filp)
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
+    struct aesd_dev *dev = filp->private_data;
+    const char *retbuff;  /* A pointer to the char buffer that will be filled for return */
+    struct aesd_buffer_entry *entry; /* A pointer to a structure for iterations */
+    size_t entry_offset;
     ssize_t retval = 0;
     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
     /**
      * TODO: handle read
      */
+
+    // Allocate space for count chars to return to the user
+    if (mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
+    retbuff = kmalloc(count * sizeof(char), GFP_KERNEL);
+    if (!(retbuff)) {
+        retval = -ENOMEM;
+        goto out;
+    }
+    // Initialize retbuff
+    memset((void *)retbuff, 0, count * sizeof(char));
+
+    entry = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), *f_pos, &entry_offset);
+
+    // If nothing to return
+    if (!entry) {
+        kfree(retbuff);
+        goto out;
+    }
+
+    do {
+        if ((retval + entry->size) < count) {
+            strncpy(retbuff + retval, entry->buffptr, entry->size);
+            retval += entry->size;
+        }
+        else {
+            strncpy(retbuff + retval, entry->buffptr, (entry_offset + 1));
+            retval += (entry_offset + 1);
+            break;
+        }
+        entry = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), *f_pos + retval, &entry_offset);
+    } while (entry);
+
+    if (copy_to_user(buf, retbuff, retval)) {
+        retval = -EFAULT;
+        goto out;
+    }
+    *f_pos += retval;
+
+  out:
+    mutex_unlock(&dev->lock);
     return retval;
 }
 
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
                 loff_t *f_pos)
 {
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_buffer_entry * entry;
+    struct aesd_buffer_entry * obsolete;
+    size_t dummy;
     ssize_t retval = -ENOMEM;
     PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
 
     /**
      * TODO: handle write
      */
-    struct aesd_dev *dev = filp->private_data;
-    struct aesd_buffer_entry * entry;
-    struct aesd_buffer_entry * obsolete;
-    size_t dummy;
 
     if (mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
     // Allocate entry 
@@ -84,7 +129,7 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         goto out;
     }
     memset(entry, 0, sizeof(struct aesd_buffer_entry));
-    // Allocate place for count char
+    // Allocate space for count chars to receive from the user
     entry->buffptr = kmalloc(count * sizeof(char), GFP_KERNEL);
     if (!(entry->buffptr)) {
         kfree(entry);
