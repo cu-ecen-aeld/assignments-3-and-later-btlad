@@ -53,8 +53,7 @@ int aesd_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
-ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
-                loff_t *f_pos)
+ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     struct aesd_dev *dev = filp->private_data;
     const char *retbuff;  /* A pointer to the char buffer that will be filled for return */
@@ -64,6 +63,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
     /**
      * TODO: handle read
+     * Done
      */
 
     // Allocate space for count chars to return to the user
@@ -86,11 +86,11 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 
     do {
         if ((retval + entry->size) < count) {
-            strncpy(retbuff + retval, entry->buffptr, entry->size);
+            strncpy((char * const)(retbuff + retval), entry->buffptr, entry->size);
             retval += entry->size;
         }
         else {
-            strncpy(retbuff + retval, entry->buffptr, (entry_offset + 1));
+            strncpy((char * const)(retbuff + retval), entry->buffptr, (entry_offset + 1));
             retval += (entry_offset + 1);
             break;
         }
@@ -108,47 +108,66 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     return retval;
 }
 
-ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
-                loff_t *f_pos)
+ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
     struct aesd_dev *dev = filp->private_data;
     struct aesd_buffer_entry * entry;
     struct aesd_buffer_entry * obsolete;
     size_t dummy;
+    uint8_t index;
+    size_t prepend = 0;
     ssize_t retval = -ENOMEM;
     PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
 
     /**
      * TODO: handle write
+     * Done
      */
 
     if (mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
+    // Check if append needed
+    index = (dev->buffer.in_offs + AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED - 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    if ((dev->buffer.entry[index].size != 0) && !strchr(dev->buffer.entry[index].buffptr, '\n')) {
+        prepend = dev->buffer.entry[index].size;
+    }
+
     // Allocate entry 
     entry = kmalloc(sizeof(struct aesd_buffer_entry), GFP_KERNEL);
     if (!entry) {
         goto out;
     }
     memset(entry, 0, sizeof(struct aesd_buffer_entry));
-    // Allocate space for count chars to receive from the user
-    entry->buffptr = kmalloc(count * sizeof(char), GFP_KERNEL);
+    // Allocate space in the struct 'entry' for count chars to receive from the user
+    entry->buffptr = kmalloc((prepend + count) * sizeof(char), GFP_KERNEL);
     if (!(entry->buffptr)) {
         kfree(entry);
         goto out;
     }
     // Initialize entry
-    memset((void *)entry->buffptr, 0, count * sizeof(char));
-//    entry->size = count;
+    memset((void *)entry->buffptr, 0, (prepend + count) * sizeof(char));
 
-    if (copy_from_user((void *)entry->buffptr, buf, count)) {
+    if (prepend !=0) {
+        strncpy((char * const)entry->buffptr, dev->buffer.entry[index].buffptr, prepend);
+    }
+
+    if (copy_from_user((void *)(entry->buffptr + prepend), buf, count)) {
         kfree(entry->buffptr);
         kfree(entry);
         retval = -EFAULT;
         goto out;
     }
-    entry->size = count;
+    entry->size = prepend + count;
 
-    /* The 'entry' is allocated and populated from user space.
-    */
+    /* The 'entry' is allocated and populated from user space, as needed it is prepended by previous content.
+     */
+
+    if (prepend != 0) {
+        if (dev->buffer.full) {
+            dev->buffer.out_offs = index;
+        }
+        dev->buffer.in_offs = index;
+    }
+
     if (dev->buffer.full) {
         obsolete = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), 0, &dummy);
         kfree(obsolete->buffptr);
@@ -186,7 +205,6 @@ static int aesd_setup_cdev(struct aesd_dev *dev)
     }
     return err;
 }
-
 
 int aesd_init_module(void)
 {
@@ -232,7 +250,6 @@ void aesd_cleanup_module(void)
 
     unregister_chrdev_region(devno, 1);
 }
-
 
 module_init(aesd_init_module);
 module_exit(aesd_cleanup_module);
