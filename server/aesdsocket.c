@@ -26,7 +26,12 @@
 
 int sockfd;        /* listen on sockfd */
 int caught_signal = 0;
-char f_name[] = "/var/tmp/aesdsocketdata";
+
+#if defined( USE_AESD_CHAR_DEVICE )
+  char f_name[] = "/dev/aesdchar";
+#else
+  char f_name[] = "/var/tmp/aesdsocketdata";
+#endif /* defined( USE_AESD_CHAR_DEVICE ) */
 
 /* SIGINT, SIGTERM Signal Handler */
 static void signal_handler(int signal_number)
@@ -132,19 +137,28 @@ typedef struct node {
 /** Thread function */
 void* thread_func(void* thread_param)
 {
+#if defined( USE_AESD_CHAR_DEVICE )
+    int fp;
+    size_t i_entry = 0;
+    // char * index;
+#else
     FILE *fp;
-    int ret;
-    int len, max_len = 0;
-    char *str = NULL;
-
     time_t t;
     struct tm *tmp;
+#endif /* defined( USE_AESD_CHAR_DEVICE ) */
+    int ret;
+    int len = 0;
+    int max_len = 0;
+    char *str = NULL;
 
     node_t *thread_func_args = (node_t *)thread_param;
 
     pthread_mutex_lock(thread_func_args->thread_mutex);
 
     if (thread_func_args->thread_fd == -1) {
+
+#if !defined( USE_AESD_CHAR_DEVICE )
+
         fp = fopen(f_name, "a+");
         str = (char *)malloc(100*sizeof(char));
         memset(str, '\0', 100);
@@ -158,6 +172,9 @@ void* thread_func(void* thread_param)
         free(str);
         str = NULL;
         fclose(fp);
+
+#endif /* !defined( USE_AESD_CHAR_DEVICE ) */
+
     }
     else {
         ret = recvall(thread_func_args->thread_fd, &str);
@@ -170,22 +187,58 @@ void* thread_func(void* thread_param)
         else {
             if (max_len < ret) max_len = ret;
 
+#if defined( USE_AESD_CHAR_DEVICE )
+
+            fp = open(f_name, O_RDWR);
+            write(fp, str, ret);
+
+            str = (char *)realloc(str, (max_len+1)*sizeof(char));
+            memset(str, '\0', (max_len+1));
+
+            while ((ret = pread(fp, str, max_len, len)) > 0) {
+                if (NULL != strchr(str, '\n')) {
+                    for (len = 1; str[len-1] != '\n'; ++len);
+                    // len = (int)(index - str) + 1;
+                    sendall(thread_func_args->thread_fd, str, &len);
+                    memset(str, '\0', (max_len+1));
+                    i_entry += len;
+                    len = i_entry;
+                }
+                else {
+                    len = i_entry + ret;
+                    if (ret == max_len) {
+                        max_len *= 2;
+                        str = (char *)realloc(str, (max_len+1)*sizeof(char));
+                        memset(str, '\0', (max_len+1));
+                    }
+                }
+            }
+
+            free(str);
+            str = NULL;
+            close(fp);
+
+#else
+
             fp = fopen(f_name, "a+");
             fputs(str, fp);
             fclose(fp);
-
             fp = fopen(f_name, "r");
 
             str = (char *)realloc(str, (max_len+1)*sizeof(char));
             memset(str, '\0', max_len+1);
+
             while (fgets(str, max_len, fp) != NULL ) {
                 len = strlen(str);
                 sendall(thread_func_args->thread_fd, str, &len);
                 memset(str, '\0', max_len+1);
             }
+
             free(str);
             str = NULL;
             fclose(fp);
+
+#endif /* defined( USE_AESD_CHAR_DEVICE ) */
         }
     }
 
@@ -384,7 +437,11 @@ int main(int argc, char *argv[])
             }
 /**       **/
         }
+
+#if !defined( USE_AESD_CHAR_DEVICE )
         remove(f_name);
+#endif /* !defined( USE_AESD_CHAR_DEVICE ) */
+
     }
         close(sockfd);
         closelog();
