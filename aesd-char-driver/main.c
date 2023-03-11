@@ -12,13 +12,22 @@
  */
 
 #include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/kernel.h>   /* printk() */
+#include <linux/slab.h>     /* kmalloc() */
+#include <linux/errno.h>    /* error codes */
+#include <linux/proc_fs.h>
+#include <linux/fcntl.h>    /* O_ACCMODE */
+#include <linux/seq_file.h>
+#include <linux/uaccess.h>  /* copy_*_user */
 #include <linux/init.h>
 #include <linux/printk.h>
-#include <linux/types.h>
+#include <linux/types.h>    /* size_t */
 #include <linux/cdev.h>
-#include <linux/fs.h> // file_operations
+#include <linux/fs.h>       /* file_operations, everything... */
 #include <linux/string.h>
-#include "aesdchar.h"
+
+#include "aesdchar.h"       /* local definitions */
 // #include "aesd-circular-buffer.h"
 
 int aesd_major =   0; // use dynamic major
