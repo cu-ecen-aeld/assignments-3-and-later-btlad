@@ -28,6 +28,7 @@
 #include <linux/string.h>
 
 #include "aesdchar.h"       /* local definitions */
+#include "aesd_ioctl.h"
 // #include "aesd-circular-buffer.h"
 
 int aesd_major =   0; // use dynamic major
@@ -49,6 +50,7 @@ int aesd_open(struct inode *inode, struct file *filp)
 
     dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
     filp->private_data = dev;                  /* for other methods */
+    filp->f_pos = 0;
 
     return 0;                                            /* success */
 }
@@ -74,9 +76,9 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
      * TODO: handle read
      * Done
      */
-
     // Allocate space for count chars to return to the user
     if (mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
+    count = dev->size - *f_pos;
     retbuff = kmalloc(count * sizeof(char), GFP_KERNEL);
     if (!(retbuff)) {
         retval = -ENOMEM;
@@ -94,13 +96,16 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
     }
 
     do {
-        if ((retval + entry->size) < count) {
-            strncpy((char * const)(retbuff + retval), entry->buffptr, entry->size);
-            retval += entry->size;
+        if ((retval + entry->size - entry_offset) <= count) {
+            strncpy((char * const)(retbuff + retval), entry->buffptr + entry_offset, entry->size - entry_offset);
+            retval += (entry->size - entry_offset);
         }
         else {
-            strncpy((char * const)(retbuff + retval), entry->buffptr, (entry_offset + 1));
-            retval += (entry_offset + 1);
+             /** This branch doesn't seem to be needed to pass the assignment 9,
+              *  but can be useful if the specified count of characters is requested 
+              *  from the device */
+            strncpy((char * const)(retbuff + retval), entry->buffptr + entry_offset, (count - retval - entry_offset));
+            retval += (count - retval - entry_offset);
             break;
         }
         entry = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), *f_pos + retval, &entry_offset);
@@ -179,12 +184,15 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
 
     if (dev->buffer.full) {
         obsolete = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), 0, &dummy);
+        dev->size -= obsolete->size;
         kfree(obsolete->buffptr);
         obsolete->size = 0;
     }
 
     aesd_circular_buffer_add_entry(&(dev->buffer), entry);
+    dev->size += entry->size;
     kfree(entry);
+    *f_pos += count;
     retval = count;
 
   out:
@@ -192,10 +200,86 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     return retval;
 }
 
+/*
+ * The llseek() implementation
+ */
+loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
+{
+    struct aesd_dev *dev = filp->private_data;
+    loff_t newpos;
+
+    switch(whence) {
+      case 0: /* SEEK_SET */
+        newpos = off;
+        break;
+
+      case 1: /* SEEK_CUR */
+        newpos = filp->f_pos + off;
+        break;
+
+      case 2: /* SEEK_END */
+        newpos = dev->size + off;
+        break;
+
+      default: /* can't happen */
+        return -EINVAL;
+    }
+    if ((newpos < 0) || (newpos >= dev->size)) return -EINVAL;
+    filp->f_pos = newpos;
+    return newpos;
+}
+
+/*
+ * The ioctl() implementation
+ */
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_buffer_entry *entry = NULL; /* A pointer to a structure for iterations */
+    struct aesd_seekto seekto;
+    size_t entry_offset;
+    loff_t newpos = 0;
+
+    /*
+     * extract the type and number bitfields, and don't decode wrong cmds:
+     * return ENOTTY (inappropriate ioctl) before
+     */
+    if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC) return -ENOTTY;
+    if (_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) return -ENOTTY;
+
+    switch(cmd) {
+
+      case AESDCHAR_IOCSEEKTO:
+        if (copy_from_user(&seekto, (struct aesd_seekto *)arg, sizeof(struct aesd_seekto))) {
+                return -EACCES;
+            }
+        for (size_t i = 0; i < seekto.write_cmd; ++i) {
+            entry = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), newpos, &entry_offset);
+            if (entry) {
+                return -EINVAL;
+            }
+            newpos += entry->size;
+        }
+        entry = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), newpos + seekto.write_cmd_offset, &entry_offset);
+        if (entry) {
+            return -EINVAL;
+        }
+        newpos += seekto.write_cmd_offset;
+        filp->f_pos = newpos;
+        break;
+
+      default:  /* redundant, as cmd was checked against MAXNR */
+        return -ENOTTY;
+    }
+    return newpos;
+}
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
+    .llseek =   aesd_llseek,
     .read =     aesd_read,
     .write =    aesd_write,
+    .unlocked_ioctl = aesd_ioctl,
     .open =     aesd_open,
     .release =  aesd_release,
 };
@@ -232,8 +316,8 @@ int aesd_init_module(void)
      * Done.
      */
     aesd_circular_buffer_init(&(aesd_device.buffer));
+    aesd_device.size = 0;
     mutex_init(&(aesd_device.lock));
-
     result = aesd_setup_cdev(&aesd_device);
 
     if( result ) {
