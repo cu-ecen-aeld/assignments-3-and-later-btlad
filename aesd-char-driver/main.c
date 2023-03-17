@@ -231,6 +231,7 @@ long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     struct aesd_buffer_entry *entry = NULL; /* A pointer to a structure for iterations */
     struct aesd_seekto seekto;
     size_t entry_offset;
+    size_t i;
     loff_t newpos = 0;
 
     /*
@@ -247,7 +248,7 @@ long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
                 return -EACCES;
             }
         PDEBUG("ioctl %u, %u",seekto.write_cmd, seekto.write_cmd_offset);
-        for (size_t i = 0; i < seekto.write_cmd; ++i) {
+        for (i = 0; i < seekto.write_cmd; ++i) {
             entry = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), newpos, &entry_offset);
             if (!entry) {
                 return -EINVAL;
