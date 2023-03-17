@@ -76,9 +76,9 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
      * TODO: handle read
      * Done
      */
-    // Allocate space for count chars to return to the user
+
     if (mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
-    count = dev->size - *f_pos;
+    // Allocate space for count chars to return to the user
     retbuff = kmalloc(count * sizeof(char), GFP_KERNEL);
     if (!(retbuff)) {
         retval = -ENOMEM;
@@ -95,28 +95,20 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
         goto out;
     }
 
-    do {
-        if ((retval + entry->size - entry_offset) <= count) {
-            strncpy((char * const)(retbuff + retval), entry->buffptr + entry_offset, entry->size - entry_offset);
-            retval += (entry->size - entry_offset);
-        }
-        else {
-             /** This branch doesn't seem to be needed to pass the assignment 9,
-              *  but can be useful if the specified count of characters is requested 
-              *  from the device */
-            strncpy((char * const)(retbuff + retval), entry->buffptr + entry_offset, (count - retval - entry_offset));
-            retval += (count - retval - entry_offset);
-            break;
-        }
-        entry = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), *f_pos + retval, &entry_offset);
-    } while (entry);
+if (count <= (entry->size - entry_offset)) {
+    strncpy((char * const)(retbuff), entry->buffptr + entry_offset, count);
+    retval = count;
+}
+else {
+    strncpy((char * const)(retbuff), entry->buffptr + entry_offset, entry->size - entry_offset);
+    retval = (entry->size - entry_offset);
+}
 
     if (copy_to_user(buf, retbuff, retval)) {
         retval = -EFAULT;
         goto out;
     }
     *f_pos += retval;
-
   out:
     mutex_unlock(&dev->lock);
     return retval;
@@ -192,7 +184,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
     aesd_circular_buffer_add_entry(&(dev->buffer), entry);
     dev->size += entry->size;
     kfree(entry);
-    *f_pos += count;
+
+    *f_pos = 0;
     retval = count;
 
   out:
@@ -250,22 +243,24 @@ long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     switch(cmd) {
 
       case AESDCHAR_IOCSEEKTO:
-        if (copy_from_user(&seekto, (struct aesd_seekto *)arg, sizeof(struct aesd_seekto))) {
+        if (copy_from_user(&seekto, (const struct aesd_seekto __user *)arg, sizeof(struct aesd_seekto))) {
                 return -EACCES;
             }
+        PDEBUG("ioctl %u, %u",seekto.write_cmd, seekto.write_cmd_offset);
         for (size_t i = 0; i < seekto.write_cmd; ++i) {
             entry = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), newpos, &entry_offset);
-            if (entry) {
+            if (!entry) {
                 return -EINVAL;
             }
             newpos += entry->size;
         }
         entry = aesd_circular_buffer_find_entry_offset_for_fpos(&(dev->buffer), newpos + seekto.write_cmd_offset, &entry_offset);
-        if (entry) {
+        if (!entry) {
             return -EINVAL;
         }
         newpos += seekto.write_cmd_offset;
         filp->f_pos = newpos;
+        PDEBUG("ioctl newpos = %lli,  f_pos = %lli", newpos, filp->f_pos);
         break;
 
       default:  /* redundant, as cmd was checked against MAXNR */

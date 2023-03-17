@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -19,6 +20,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <time.h>
+#include "aesd_ioctl.h"
 
 #define PORT "9000"
 #define BACKLOG 5   // how many pending connections queue will hold
@@ -139,15 +141,13 @@ void* thread_func(void* thread_param)
 {
 #if defined( USE_AESD_CHAR_DEVICE )
     int fp;
-    size_t i_entry = 0;
-    // char * index;
+    struct aesd_seekto seekto;
 #else
     FILE *fp;
     time_t t;
     struct tm *tmp;
 #endif /* defined( USE_AESD_CHAR_DEVICE ) */
     int ret;
-    int len = 0;
     int max_len = 0;
     char *str = NULL;
 
@@ -190,30 +190,20 @@ void* thread_func(void* thread_param)
 #if defined( USE_AESD_CHAR_DEVICE )
 
             fp = open(f_name, O_RDWR);
-            write(fp, str, ret);
 
-            str = (char *)realloc(str, (max_len+1)*sizeof(char));
-            memset(str, '\0', (max_len+1));
-
-            while ((ret = pread(fp, str, max_len, len)) > 0) {
-                if (NULL != strchr(str, '\n')) {
-                    for (len = 1; str[len-1] != '\n'; ++len);
-                    // len = (int)(index - str) + 1;
-                    sendall(thread_func_args->thread_fd, str, &len);
-                    memset(str, '\0', (max_len+1));
-                    i_entry += len;
-                    len = i_entry;
-                }
-                else {
-                    len = i_entry + ret;
-                    if (ret == max_len) {
-                        max_len *= 2;
-                        str = (char *)realloc(str, (max_len+1)*sizeof(char));
-                        memset(str, '\0', (max_len+1));
-                    }
-                }
+            if (strstr(str, "AESDCHAR_IOCSEEKTO:")) {
+                sscanf(str, "AESDCHAR_IOCSEEKTO:%u,%u", &seekto.write_cmd, &seekto.write_cmd_offset);
+                ioctl(fp, AESDCHAR_IOCSEEKTO, &seekto);
+            }
+            else {
+                write(fp, str, ret);
             }
 
+            memset(str, '\0', max_len);
+
+            while ((ret = read(fp, str, max_len)) > 0) {
+                sendall(thread_func_args->thread_fd, str, &ret);
+            }
             free(str);
             str = NULL;
             close(fp);
@@ -242,8 +232,8 @@ void* thread_func(void* thread_param)
         }
     }
 
-    pthread_mutex_unlock(thread_func_args->thread_mutex);
     thread_func_args->thread_complete = true;
+    pthread_mutex_unlock(thread_func_args->thread_mutex);
 
     return thread_param;
 }
